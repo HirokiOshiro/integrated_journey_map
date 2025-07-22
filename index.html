@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>統合ジャーニーマップビューア</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
@@ -455,7 +455,8 @@
             const [selectedPersonas, setSelectedPersonas] = useState(['nishimura']);
             const [viewMode, setViewMode] = useState('detail'); // 'detail' or 'selfauthorship'
             const [journeyType, setJourneyType] = useState('growth'); // 'growth' or 'stagnation' or 'both'
-            const [comparisonMode, setComparisonMode] = useState('side'); // 'side' or 'overlay'
+            const [detailComparisonMode, setDetailComparisonMode] = useState('side'); // 'side' or 'overlay'
+            const [selfAuthorshipComparisonMode, setSelfAuthorshipComparisonMode] = useState('side'); // 'side' or 'overlay'
             const [filterYear, setFilterYear] = useState('all'); // 'all', '1', '2', '3', '4'
             const [showTurningPoints, setShowTurningPoints] = useState(false);
             const [dataErrors, setDataErrors] = useState([]);
@@ -484,7 +485,7 @@
                     return <DetailJourneyView 
                         selectedPersonas={selectedPersonas}
                         journeyType={journeyType}
-                        comparisonMode={comparisonMode}
+                        comparisonMode={detailComparisonMode}
                         filterYear={filterYear}
                         showTurningPoints={showTurningPoints}
                     />;
@@ -492,7 +493,7 @@
                     return <SelfAuthorshipView 
                         selectedPersonas={selectedPersonas}
                         journeyType={journeyType}
-                        comparisonMode={comparisonMode}
+                        comparisonMode={selfAuthorshipComparisonMode}
                     />;
                 }
             };
@@ -561,8 +562,14 @@
                                     <div>
                                         <label className="text-sm font-semibold text-gray-700 block mb-2">比較モード</label>
                                         <select
-                                            value={comparisonMode}
-                                            onChange={(e) => setComparisonMode(e.target.value)}
+                                            value={viewMode === 'detail' ? detailComparisonMode : selfAuthorshipComparisonMode}
+                                            onChange={(e) => {
+                                                if (viewMode === 'detail') {
+                                                    setDetailComparisonMode(e.target.value);
+                                                } else {
+                                                    setSelfAuthorshipComparisonMode(e.target.value);
+                                                }
+                                            }}
                                             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                                         >
                                             <option value="side">横並び表示</option>
@@ -626,11 +633,16 @@
                     </main>
                 </div>
             );
-        }
+        };
 
         // 詳細ジャーニービューコンポーネント
         function DetailJourneyView({ selectedPersonas, journeyType, comparisonMode, filterYear, showTurningPoints }) {
             const filteredData = useMemo(() => {
+                // 入力値の検証
+                if (!selectedPersonas || !Array.isArray(selectedPersonas) || selectedPersonas.length === 0) {
+                    return {};
+                }
+                
                 try {
                     const result = {};
                     selectedPersonas.forEach(personaId => {
@@ -676,6 +688,87 @@
                     return {};
                 }
             }, [selectedPersonas, journeyType, filterYear, showTurningPoints]);
+
+            // 重ね合わせ表示用のmergedEvents（常に計算）
+            const mergedEvents = useMemo(() => {
+                if (!filteredData || Object.keys(filteredData).length === 0) {
+                    return [];
+                }
+                
+                const allEvents = [];
+                
+                try {
+                    Object.entries(filteredData).forEach(([personaId, data]) => {
+                        if (!data || !data.filteredJourneys) return;
+                        
+                        Object.entries(data.filteredJourneys).forEach(([type, events]) => {
+                            if (!events || !Array.isArray(events)) return;
+                            
+                            events.forEach(event => {
+                                // 安全な時間形式の変換
+                                let sortKey = '0000';
+                                if (event.time && typeof event.time === 'string') {
+                                    try {
+                                        // "3年10月" -> "0310", "1年4月" -> "0104" の形式に変換
+                                        const timeMatch = event.time.match(/(\d+)年(\d+)月?/);
+                                        if (timeMatch) {
+                                            const year = timeMatch[1].padStart(2, '0');
+                                            const month = timeMatch[2].padStart(2, '0');
+                                            sortKey = year + month;
+                                        }
+                                    } catch (error) {
+                                        console.warn(`時間データの変換に失敗: ${event.time}`, error);
+                                    }
+                                }
+                                
+                                allEvents.push({
+                                    ...event,
+                                    personaId,
+                                    personaName: data.name,
+                                    personaColor: data.color,
+                                    journeyType: type,
+                                    sortKey
+                                });
+                            });
+                        });
+                    });
+                } catch (error) {
+                    console.error('mergedEvents処理中にエラーが発生しました:', error);
+                    return [];
+                }
+                
+                // 時系列でソート
+                return allEvents.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+            }, [filteredData]);
+
+            // タイムライングループ（常に計算）
+            const timelineGroups = useMemo(() => {
+                if (!mergedEvents || !Array.isArray(mergedEvents)) {
+                    return {};
+                }
+                
+                const groups = {};
+                try {
+                    mergedEvents.forEach(event => {
+                        if (!event || !event.time) return;
+                        
+                        if (!groups[event.time]) {
+                            groups[event.time] = [];
+                        }
+                        groups[event.time].push(event);
+                    });
+                } catch (error) {
+                    console.error('timelineGroups処理中にエラーが発生しました:', error);
+                    return {};
+                }
+                
+                return groups;
+            }, [mergedEvents]);
+
+            // プロパティの検証（すべてのフックの後で行う）
+            if (!selectedPersonas || !Array.isArray(selectedPersonas) || selectedPersonas.length === 0) {
+                return <div className="p-4 text-red-600">データ読み込みエラー: ペルソナが選択されていません</div>;
+            }
 
             if (comparisonMode === 'side') {
                 return (
@@ -731,55 +824,6 @@
                 );
             } else {
                 // 重ね合わせ表示の実装
-                const mergedEvents = useMemo(() => {
-                    const allEvents = [];
-                    
-                    Object.entries(filteredData).forEach(([personaId, data]) => {
-                        Object.entries(data.filteredJourneys).forEach(([type, events]) => {
-                            events.forEach(event => {
-                                // 安全な時間形式の変換
-                                let sortKey = '0000';
-                                if (event.time && typeof event.time === 'string') {
-                                    try {
-                                        // "3年10月" -> "0310", "1年4月" -> "0104" の形式に変換
-                                        const timeMatch = event.time.match(/(\d+)年(\d+)月?/);
-                                        if (timeMatch) {
-                                            const year = timeMatch[1].padStart(2, '0');
-                                            const month = timeMatch[2].padStart(2, '0');
-                                            sortKey = year + month;
-                                        }
-                                    } catch (error) {
-                                        console.warn(`時間データの変換に失敗: ${event.time}`, error);
-                                    }
-                                }
-                                
-                                allEvents.push({
-                                    ...event,
-                                    personaId,
-                                    personaName: data.name,
-                                    personaColor: data.color,
-                                    journeyType: type,
-                                    sortKey
-                                });
-                            });
-                        });
-                    });
-                    
-                    // 時系列でソート
-                    return allEvents.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
-                }, [filteredData]);
-
-                const timelineGroups = useMemo(() => {
-                    const groups = {};
-                    mergedEvents.forEach(event => {
-                        if (!groups[event.time]) {
-                            groups[event.time] = [];
-                        }
-                        groups[event.time].push(event);
-                    });
-                    return groups;
-                }, [mergedEvents]);
-
                 return (
                     <div className="bg-white rounded-lg shadow-md p-6">
                         <h3 className="text-lg font-bold text-gray-800 mb-4">タイムライン統合ビュー</h3>
@@ -1481,10 +1525,11 @@
                     </div>
                 </div>
             );
-        }
+        };
 
-        // アプリケーションのレンダリング
-        ReactDOM.render(<App />, document.getElementById('root'));
+        // アプリケーションのレンダリング（React 18の新しいAPI）
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
     </script>
 </body>
 </html>
